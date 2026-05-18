@@ -1,0 +1,50 @@
+# ── Dependencias ──────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Build / compilación ────────────────────────────────────────────────────────
+dist/
+build/
+
+# ── Variables de entorno (NUNCA subir al repo) ─────────────────────────────────
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+*.env
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Cobertura de tests ─────────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+
+# ── Caché y temporales ─────────────────────────────────────────────────────────
+.cache/
+tmp/
+temp/
+
+# ── IDEs y editores ───────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ── Sistema operativo ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── NestJS específico ─────────────────────────────────────────────────────────
+# Mantener tsconfig.build.json pero ignorar archivos generados
+*.js.map
+*.d.ts
