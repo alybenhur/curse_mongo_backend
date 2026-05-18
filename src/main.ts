@@ -15,8 +15,13 @@ async function bootstrap() {
   );
 
   // CORS para el frontend Nuxt
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const normalizedUrl = frontendUrl.startsWith('http')
+    ? frontendUrl
+    : `https://${frontendUrl}`;
+
   app.enableCors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: normalizedUrl,
     credentials: true,
   });
 
