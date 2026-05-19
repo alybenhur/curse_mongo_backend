@@ -8,6 +8,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { UserRole } from '../users/schemas/user.schema';
+// UserRole.PROFESSOR agregado para acceso al panel de profesor
 
 @Controller('progress')
 @UseGuards(JwtAuthGuard)
@@ -78,14 +79,14 @@ export class ProgressController {
 
   @Get('admin/all')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.PROFESSOR)
   getAllProgress() {
     return this.progressService.getAllUsersProgress();
   }
 
   @Get('admin/user/:userId')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.PROFESSOR)
   getUserProgress(@Param('userId') userId: string) {
     return this.progressService.getUserProgressForAdmin(userId);
   }
