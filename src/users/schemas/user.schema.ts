@@ -70,6 +70,10 @@ export class User {
 
   @Prop({ default: true })
   isActive: boolean;
+
+  // URI de Atlas del estudiante (guardada encriptada con AES-256-GCM)
+  @Prop({ default: null, select: false })
+  atlasUri: string | null;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

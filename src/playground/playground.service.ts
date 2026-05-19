@@ -1,27 +1,31 @@
-import { Injectable, BadRequestException, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { ConfigService } from '@nestjs/config';
 import { Model, Types } from 'mongoose';
 import { MongoClient, Db } from 'mongodb';
 import { QueryHistory, QueryHistoryDocument } from './playground.schema';
+import { UsersService } from '../users/users.service';
 
-// Operaciones prohibidas en el sandbox
+// Operaciones prohibidas en el playground
 const FORBIDDEN_PATTERNS = [
   /dropDatabase/i,
-  /\.drop\s*\(\s*\)/i,
   /shutdownServer/i,
   /fsyncLock/i,
   /killAllSessions/i,
   /db\.adminCommand/i,
   /db\.system\./i,
-  /fs\.files/i,
   /process\./i,
   /require\s*\(/i,
   /eval\s*\(/i,
 ];
 
-// Colecciones de sistema que no se pueden modificar
 const SYSTEM_COLLECTIONS = ['system.users', 'system.roles', 'system.version'];
+
+// Tiempo de inactividad antes de cerrar una conexión cacheada (30 min)
+const CONNECTION_TTL_MS = 30 * 60 * 1_000;
 
 export interface QueryResult {
   success: boolean;
@@ -32,35 +36,102 @@ export interface QueryResult {
   queryType: string;
 }
 
+interface CachedConnection {
+  client: MongoClient;
+  dbName: string;
+  lastUsed: number;
+}
+
 @Injectable()
-export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
-  private client: MongoClient;
+export class PlaygroundService implements OnModuleDestroy {
+  /** Conexiones por userId — se crean bajo demanda con la URI de Atlas del estudiante */
+  private readonly connections = new Map<string, CachedConnection>();
+  private cleanupTimer: NodeJS.Timeout;
 
   constructor(
     @InjectModel(QueryHistory.name)
     private queryHistoryModel: Model<QueryHistoryDocument>,
-    private configService: ConfigService,
-  ) {}
-
-  async onModuleInit() {
-    const uri = this.configService.get<string>('MONGODB_URI', 'mongodb://localhost:27017');
-    this.client = new MongoClient(uri);
-    await this.client.connect();
-    console.log('🎮 Playground MongoDB conectado');
+    private readonly usersService: UsersService,
+  ) {
+    // Limpia conexiones inactivas cada 10 minutos
+    this.cleanupTimer = setInterval(() => this.cleanupIdleConnections(), 10 * 60 * 1_000);
   }
 
   async onModuleDestroy() {
-    await this.client.close();
+    clearInterval(this.cleanupTimer);
+    for (const { client } of this.connections.values()) {
+      await client.close().catch(() => null);
+    }
+    this.connections.clear();
   }
 
-  // ── Obtener/crear sandbox del estudiante ──────────────────────────────────
+  // ── Gestión de conexiones por usuario ─────────────────────────────────────
 
-  getSandboxName(userId: string): string {
-    return `sandbox_${userId}`;
+  private async getOrCreateConnection(userId: string): Promise<CachedConnection> {
+    const cached = this.connections.get(userId);
+    if (cached) {
+      cached.lastUsed = Date.now();
+      return cached;
+    }
+
+    const uri = await this.usersService.getDecryptedAtlasUri(userId);
+    if (!uri) {
+      throw new BadRequestException(
+        'No tienes una conexión de MongoDB Atlas configurada. ' +
+          'Configúrala en el panel del Playground.',
+      );
+    }
+
+    const client = new MongoClient(uri, { serverSelectionTimeoutMS: 10_000 });
+    await client.connect();
+
+    const dbName = this.parseDbName(uri);
+    const conn: CachedConnection = { client, dbName, lastUsed: Date.now() };
+    this.connections.set(userId, conn);
+    return conn;
   }
 
-  private getSandboxDb(userId: string): Db {
-    return this.client.db(this.getSandboxName(userId));
+  private parseDbName(uri: string): string {
+    try {
+      const normalized = uri
+        .replace('mongodb+srv://', 'https://')
+        .replace('mongodb://', 'https://');
+      const pathname = new URL(normalized).pathname.replace('/', '').split('?')[0];
+      return pathname || 'mongotutorplayground';
+    } catch {
+      return 'mongotutorplayground';
+    }
+  }
+
+  private async cleanupIdleConnections() {
+    const now = Date.now();
+    for (const [userId, conn] of this.connections.entries()) {
+      if (now - conn.lastUsed > CONNECTION_TTL_MS) {
+        await conn.client.close().catch(() => null);
+        this.connections.delete(userId);
+      }
+    }
+  }
+
+  /** Cierra y elimina la conexión cacheada de un usuario (tras cambiar URI) */
+  async invalidateUserConnection(userId: string): Promise<void> {
+    const cached = this.connections.get(userId);
+    if (cached) {
+      await cached.client.close().catch(() => null);
+      this.connections.delete(userId);
+    }
+  }
+
+  // ── Info del atlas del estudiante ─────────────────────────────────────────
+
+  async getAtlasInfo(userId: string): Promise<{ dbName: string; message: string }> {
+    const conn = await this.getOrCreateConnection(userId);
+    return {
+      dbName: conn.dbName,
+      message:
+        'Esta es tu base de datos personal en MongoDB Atlas. ' +
+        'Puedes crear, modificar y eliminar colecciones libremente.',
+    };
   }
 
   // ── Validar query ─────────────────────────────────────────────────────────
@@ -69,7 +140,7 @@ export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
     for (const pattern of FORBIDDEN_PATTERNS) {
       if (pattern.test(query)) {
         throw new BadRequestException(
-          `Operación no permitida en el sandbox: ${pattern.source}`,
+          `Operación no permitida en el playground: ${pattern.source}`,
         );
       }
     }
@@ -93,7 +164,7 @@ export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
     if (q.includes('.aggregate')) return 'AGGREGATE';
     if (q.includes('.createindex') || q.includes('.dropindex')) return 'INDEX';
     if (q.includes('.drop()')) return 'DROP_COLLECTION';
-    if (q.includes('show collections') || q.includes('show dbs')) return 'SHOW';
+    if (q.includes('show collections')) return 'SHOW';
     if (q.includes('.countdocuments') || q.includes('.count')) return 'COUNT';
     if (q.includes('.distinct')) return 'DISTINCT';
     return 'OTHER';
@@ -108,8 +179,8 @@ export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
   ): Promise<QueryResult> {
     this.validateQuery(query);
 
-    const sandboxDb = this.getSandboxDb(userId);
-    const sandboxName = this.getSandboxName(userId);
+    const conn = await this.getOrCreateConnection(userId);
+    const db = conn.client.db(conn.dbName);
     const queryType = this.detectQueryType(query);
     const startTime = Date.now();
 
@@ -119,9 +190,8 @@ export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
     let docsAffected = 0;
 
     try {
-      result = await this.runQuery(sandboxDb, query, sandboxName);
+      result = await this.runQuery(db, query, conn.dbName, conn.client);
 
-      // Calcular docsAffected según tipo
       if (result && typeof result === 'object') {
         if ('insertedCount' in result) docsAffected = result.insertedCount;
         else if ('modifiedCount' in result) docsAffected = result.modifiedCount;
@@ -136,7 +206,6 @@ export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
 
     const executionTimeMs = Date.now() - startTime;
 
-    // Guardar en historial
     await this.queryHistoryModel.create({
       userId: new Types.ObjectId(userId),
       query,
@@ -145,7 +214,7 @@ export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
       executionTimeMs,
       docsAffected,
       stageOrder: stageOrder ?? null,
-      sandboxDb: sandboxName,
+      sandboxDb: conn.dbName,
     });
 
     return {
@@ -158,48 +227,44 @@ export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  // ── Motor de ejecución de queries ─────────────────────────────────────────
+  // ── Motor de ejecución ────────────────────────────────────────────────────
 
-  private async runQuery(db: Db, query: string, dbName: string): Promise<any> {
+  private async runQuery(
+    db: Db,
+    query: string,
+    dbName: string,
+    client: MongoClient,
+  ): Promise<any> {
     const cleaned = query.trim();
 
-    // Comandos especiales de shell
     if (/^show\s+collections$/i.test(cleaned)) {
       return db.listCollections().toArray().then((cols) => cols.map((c) => c.name));
     }
-    if (/^show\s+dbs$/i.test(cleaned)) {
-      const adminDb = this.client.db('admin');
-      const result = await adminDb.command({ listDatabases: 1 });
-      return result.databases.map((d: any) => ({ name: d.name, sizeOnDisk: d.sizeOnDisk }));
-    }
     if (/^use\s+(\w+)$/i.test(cleaned)) {
       const match = cleaned.match(/^use\s+(\w+)$/i);
-      return { message: `Switched to db '${match![1]}' (en sandbox, siempre usa tu BD aislada)` };
+      return {
+        message: `Switched to db '${match![1]}' (en tu Atlas, siempre se usa la BD de tu URI)`,
+      };
     }
 
-    // Construir contexto de ejecución con helpers MongoDB
     const context = this.buildExecutionContext(db, dbName);
-
-    // Evaluar la query en el contexto
     const fn = new Function(...Object.keys(context), `"use strict"; return (${cleaned})`);
     const raw = fn(...Object.values(context));
-
-    // Resolver promesas y cursores
     return this.resolveValue(raw);
   }
 
   private buildExecutionContext(db: Db, dbName: string): Record<string, any> {
-    // Proxy para db.collection acceso tipo db.nombreColeccion
     const dbProxy = new Proxy(
       { _db: db, getName: () => dbName },
       {
         get(target: any, prop: string) {
           if (prop in target) return target[prop];
-          if (prop === 'getSiblingDB') return (name: string) => db;
+          if (prop === 'getSiblingDB') return () => db;
           if (prop === 'stats') return () => db.command({ dbStats: 1 });
-          if (prop === 'createCollection') return (name: string, opts?: any) => db.createCollection(name, opts);
-          if (prop === 'listCollectionNames') return () => db.listCollections().toArray().then((c) => c.map((x) => x.name));
-          // Retornar colección
+          if (prop === 'createCollection')
+            return (name: string, opts?: any) => db.createCollection(name, opts);
+          if (prop === 'listCollectionNames')
+            return () => db.listCollections().toArray().then((c) => c.map((x) => x.name));
           const col = db.collection(prop);
           return new Proxy(col, {
             get(colTarget: any, colProp: string) {
@@ -235,9 +300,7 @@ export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
 
   private serializeResult(result: any): any {
     return JSON.parse(
-      JSON.stringify(result, (_, v) =>
-        typeof v === 'bigint' ? v.toString() : v,
-      ),
+      JSON.stringify(result, (_, v) => (typeof v === 'bigint' ? v.toString() : v)),
     );
   }
 
@@ -251,27 +314,35 @@ export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
       .exec();
   }
 
-  async clearSandbox(userId: string): Promise<{ message: string }> {
-    const db = this.getSandboxDb(userId);
-    const collections = await db.listCollections().toArray();
-    for (const col of collections) {
-      await db.collection(col.name).drop().catch(() => null);
-    }
-    return { message: `Sandbox limpiado: ${collections.length} colección(es) eliminada(s)` };
-  }
+  // ── Colecciones en la BD del usuario ─────────────────────────────────────
 
   async getSandboxCollections(userId: string): Promise<string[]> {
-    const db = this.getSandboxDb(userId);
+    const conn = await this.getOrCreateConnection(userId);
+    const db = conn.client.db(conn.dbName);
     const cols = await db.listCollections().toArray();
     return cols.map((c) => c.name);
   }
 
-  // ── Snippets por etapa ─────────────────────────────────────────────────────
+  // ── Limpiar BD (borrar todas las colecciones) ─────────────────────────────
+
+  async clearSandbox(userId: string): Promise<{ message: string }> {
+    const conn = await this.getOrCreateConnection(userId);
+    const db = conn.client.db(conn.dbName);
+    const collections = await db.listCollections().toArray();
+    for (const col of collections) {
+      await db.collection(col.name).drop().catch(() => null);
+    }
+    return {
+      message: `BD limpiada: ${collections.length} colección(es) eliminada(s) de '${conn.dbName}'`,
+    };
+  }
+
+  // ── Snippets por etapa ────────────────────────────────────────────────────
 
   getSnippetsByStage(stageOrder: number): { label: string; code: string }[] {
     const snippets: Record<number, { label: string; code: string }[]> = {
       1: [
-        { label: 'Ver base de datos actual', code: 'db.getName()' },
+        { label: 'Ver base de datos', code: 'db.getName()' },
         { label: 'Listar colecciones', code: 'show collections' },
       ],
       2: [
@@ -287,14 +358,14 @@ export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
         { label: 'deleteOne', code: 'db.productos.deleteOne({ stock: 0 })' },
       ],
       4: [
-        { label: 'Operadores $gt/$lt', code: 'db.col.find({ campo: { $gt: 10, $lt: 100 } })' },
-        { label: '$in - múltiples valores', code: 'db.col.find({ estado: { $in: ["activo", "pendiente"] } })' },
-        { label: '$and / $or', code: 'db.col.find({ $or: [\n  { precio: { $lt: 50 } },\n  { stock: { $gt: 100 } }\n]})' },
+        { label: '$gt/$lt', code: 'db.col.find({ campo: { $gt: 10, $lt: 100 } })' },
+        { label: '$in', code: 'db.col.find({ estado: { $in: ["activo", "pendiente"] } })' },
+        { label: '$or', code: 'db.col.find({ $or: [\n  { precio: { $lt: 50 } },\n  { stock: { $gt: 100 } }\n]})' },
         { label: 'Proyección', code: 'db.col.find({}, { nombre: 1, precio: 1, _id: 0 })' },
-        { label: 'Sort + Limit + Skip', code: 'db.col.find().sort({ precio: -1 }).limit(5).skip(0)' },
+        { label: 'Sort + Limit', code: 'db.col.find().sort({ precio: -1 }).limit(5)' },
       ],
       5: [
-        { label: 'Crear índice simple', code: 'db.col.createIndex({ campo: 1 })' },
+        { label: 'Crear índice', code: 'db.col.createIndex({ campo: 1 })' },
         { label: 'Índice compuesto', code: 'db.col.createIndex({ campo1: 1, campo2: -1 })' },
         { label: 'Índice único', code: 'db.col.createIndex({ email: 1 }, { unique: true })' },
         { label: 'Ver índices', code: 'db.col.getIndexes()' },
@@ -304,7 +375,7 @@ export class PlaygroundService implements OnModuleInit, OnModuleDestroy {
         { label: '$match + $group', code: 'db.ventas.aggregate([\n  { $match: { activo: true } },\n  { $group: { _id: "$categoria", total: { $sum: "$monto" } } }\n])' },
         { label: '$project', code: 'db.col.aggregate([\n  { $project: { nombre: 1, precioConIva: { $multiply: ["$precio", 1.19] } } }\n])' },
         { label: '$lookup (JOIN)', code: 'db.pedidos.aggregate([\n  { $lookup: {\n    from: "clientes",\n    localField: "clienteId",\n    foreignField: "_id",\n    as: "cliente"\n  }}\n])' },
-        { label: '$sort + $limit (top 5)', code: 'db.ventas.aggregate([\n  { $group: { _id: "$producto", total: { $sum: "$monto" } } },\n  { $sort: { total: -1 } },\n  { $limit: 5 }\n])' },
+        { label: 'Top 5', code: 'db.ventas.aggregate([\n  { $group: { _id: "$producto", total: { $sum: "$monto" } } },\n  { $sort: { total: -1 } },\n  { $limit: 5 }\n])' },
       ],
     };
     return snippets[stageOrder] ?? [

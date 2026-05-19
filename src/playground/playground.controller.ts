@@ -52,12 +52,9 @@ export class PlaygroundController {
     return this.playgroundService.getSnippetsByStage(stage);
   }
 
-  // Nombre de la BD sandbox del estudiante
+  // Info de la BD Atlas del estudiante
   @Get('sandbox-info')
   getSandboxInfo(@CurrentUser('_id') userId: string) {
-    return {
-      sandboxDb: this.playgroundService.getSandboxName(userId),
-      message: 'Esta es tu base de datos personal de práctica. Puedes crear, modificar y eliminar colecciones libremente.',
-    };
+    return this.playgroundService.getAtlasInfo(userId);
   }
 }

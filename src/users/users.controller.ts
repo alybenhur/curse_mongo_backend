@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Patch, Post, Body,
+  Controller, Get, Patch, Post, Delete, Body,
   UseGuards, HttpCode, HttpStatus, Param,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
@@ -59,6 +59,32 @@ export class UsersController {
   @Roles(UserRole.PROFESSOR, UserRole.ADMIN)
   async getStudent(@Param('id') id: string) {
     return this.usersService.findById(id);
+  }
+
+  // ── Atlas URI (playground con conexión propia) ────────────────────────────
+
+  /** Guarda y valida la URI de Atlas del estudiante */
+  @Post('me/atlas-uri')
+  @HttpCode(HttpStatus.OK)
+  async saveAtlasUri(
+    @CurrentUser('_id') userId: string,
+    @Body() body: { uri: string },
+  ) {
+    return this.usersService.saveAtlasUri(userId, body.uri);
+  }
+
+  /** Verifica si el estudiante tiene URI configurada y si conecta */
+  @Get('me/atlas-uri/status')
+  async getAtlasStatus(@CurrentUser('_id') userId: string) {
+    return this.usersService.getAtlasStatus(userId);
+  }
+
+  /** Elimina la URI de Atlas */
+  @Delete('me/atlas-uri')
+  @HttpCode(HttpStatus.OK)
+  async removeAtlasUri(@CurrentUser('_id') userId: string) {
+    await this.usersService.removeAtlasUri(userId);
+    return { message: 'Conexión de Atlas eliminada correctamente' };
   }
 
   // ── Admin — cambiar rol de un usuario ─────────────────────────────────────
