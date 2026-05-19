@@ -72,7 +72,7 @@ export class User {
   isActive: boolean;
 
   // URI de Atlas del estudiante (guardada encriptada con AES-256-GCM)
-  @Prop({ default: null, select: false })
+  @Prop({ type: String, default: null, select: false })
   atlasUri: string | null;
 }
 
