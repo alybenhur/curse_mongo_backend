@@ -12,28 +12,63 @@ export class CurriculumService implements OnModuleInit {
     @InjectModel(Lesson.name) private lessonModel: Model<LessonDocument>,
   ) {}
 
-  // Sembrar datos al iniciar si la BD está vacía
+  // Sembrar datos al iniciar si la BD está vacía o faltan lecciones
   async onModuleInit() {
-    const count = await this.stageModel.countDocuments();
-    if (count === 0) {
+    const stageCount = await this.stageModel.countDocuments();
+    if (stageCount === 0) {
       await this.seedCurriculum();
+      return;
     }
+    // Las etapas ya existen → verificar si faltan lecciones (ej. etapas 4-13 sin contenido)
+    await this.seedMissingLessons();
   }
 
   private async seedCurriculum() {
     console.log('🌱 Sembrando currículo inicial...');
     const stages = await this.stageModel.insertMany(STAGES_SEED);
-
-    // Mapear order → _id para asignarlo a las lecciones
     const stageMap = new Map(stages.map((s) => [s.order, s._id]));
-
     const lessonsWithIds = LESSONS_SEED.map((lesson) => ({
       ...lesson,
       stageId: stageMap.get(lesson.stageOrder),
     }));
-
     await this.lessonModel.insertMany(lessonsWithIds);
     console.log(`✅ ${stages.length} etapas y ${lessonsWithIds.length} lecciones sembradas`);
+  }
+
+  /** Siembra las lecciones que aún no existen (detecta etapas sin contenido) */
+  private async seedMissingLessons() {
+    // Agrupar lecciones del seed por etapa
+    const lessonsByStage = new Map<number, typeof LESSONS_SEED>();
+    for (const lesson of LESSONS_SEED) {
+      const list = lessonsByStage.get(lesson.stageOrder) ?? [];
+      list.push(lesson);
+      lessonsByStage.set(lesson.stageOrder, list);
+    }
+
+    // Obtener todas las etapas de la BD
+    const stages = await this.stageModel.find().exec();
+    const stageMap = new Map(stages.map((s) => [s.order, s._id]));
+
+    const toInsert: any[] = [];
+
+    for (const [stageOrder, lessons] of lessonsByStage) {
+      const stageId = stageMap.get(stageOrder);
+      if (!stageId) continue;
+
+      // Contar lecciones existentes para esta etapa
+      const existing = await this.lessonModel.countDocuments({ stageOrder });
+      if (existing === 0) {
+        // No hay lecciones → sembrar todas las de esta etapa
+        for (const lesson of lessons) {
+          toInsert.push({ ...lesson, stageId });
+        }
+      }
+    }
+
+    if (toInsert.length > 0) {
+      await this.lessonModel.insertMany(toInsert);
+      console.log(`✅ ${toInsert.length} lecciones faltantes sembradas`);
+    }
   }
 
   // ── Etapas ────────────────────────────────────────────────────────────────
