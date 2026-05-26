@@ -1,6 +1,9 @@
-import { Controller, Get, Param, ParseIntPipe, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Param, ParseIntPipe, UseGuards } from '@nestjs/common';
 import { CurriculumService } from './curriculum.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from '../users/schemas/user.schema';
 
 @Controller('curriculum')
 @UseGuards(JwtAuthGuard)
@@ -25,5 +28,14 @@ export class CurriculumController {
   @Get('lessons/:id')
   getLesson(@Param('id') id: string) {
     return this.curriculumService.findLessonById(id);
+  }
+
+  /** Siembra lecciones faltantes — solo admins y profesores */
+  @Post('admin/seed-lessons')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.PROFESSOR)
+  async seedMissingLessons() {
+    await this.curriculumService.seedMissingLessons();
+    return { message: 'Lecciones faltantes sembradas correctamente' };
   }
 }

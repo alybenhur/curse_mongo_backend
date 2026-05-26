@@ -35,8 +35,8 @@ export class CurriculumService implements OnModuleInit {
     console.log(`✅ ${stages.length} etapas y ${lessonsWithIds.length} lecciones sembradas`);
   }
 
-  /** Siembra las lecciones que aún no existen (detecta etapas sin contenido) */
-  private async seedMissingLessons() {
+  /** Siembra las lecciones que aún no existen (detecta etapas sin contenido) — público para el endpoint admin */
+  async seedMissingLessons() {
     // Agrupar lecciones del seed por etapa
     const lessonsByStage = new Map<number, typeof LESSONS_SEED>();
     for (const lesson of LESSONS_SEED) {
