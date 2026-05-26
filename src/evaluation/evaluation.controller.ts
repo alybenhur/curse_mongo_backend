@@ -10,10 +10,13 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { EvaluationService } from './evaluation.service';
 import { SubmitEvaluationDto } from './dto/submit-evaluation.dto';
 import { CurriculumService } from '../curriculum/curriculum.service';
+import { UserRole } from '../users/schemas/user.schema';
 
 @UseGuards(JwtAuthGuard)
 @Controller('evaluation')
@@ -22,6 +25,15 @@ export class EvaluationController {
     private readonly evaluationService: EvaluationService,
     private readonly curriculumService: CurriculumService,
   ) {}
+
+  // POST /api/evaluation/admin/seed-questions — Sembrar preguntas faltantes
+  @Post('admin/seed-questions')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.PROFESSOR)
+  async seedMissingQuestions() {
+    const inserted = await this.evaluationService.seedMissingQuestions();
+    return { message: `${inserted} preguntas faltantes sembradas correctamente` };
+  }
 
   // GET /api/evaluation/:stageOrder — Preguntas de la etapa (sin respuestas)
   @Get(':stageOrder')

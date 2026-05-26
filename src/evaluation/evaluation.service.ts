@@ -43,7 +43,35 @@ export class EvaluationService implements OnModuleInit {
     if (count === 0) {
       await this.questionModel.insertMany(QUESTIONS_SEED);
       console.log(`✅ Evaluaciones: ${QUESTIONS_SEED.length} preguntas sembradas`);
+      return;
     }
+    await this.seedMissingQuestions();
+  }
+
+  /** Siembra preguntas para etapas que todavía tienen 0 preguntas en la BD */
+  async seedMissingQuestions(): Promise<number> {
+    // Agrupar preguntas del seed por etapa
+    const byStage = new Map<number, typeof QUESTIONS_SEED>();
+    for (const q of QUESTIONS_SEED) {
+      const list = byStage.get(q.stageOrder) ?? [];
+      list.push(q);
+      byStage.set(q.stageOrder, list);
+    }
+
+    const toInsert: any[] = [];
+    for (const [stageOrder, questions] of byStage) {
+      const existing = await this.questionModel.countDocuments({ stageOrder });
+      if (existing === 0) {
+        toInsert.push(...questions);
+      }
+    }
+
+    if (toInsert.length > 0) {
+      await this.questionModel.insertMany(toInsert);
+      console.log(`✅ Evaluaciones: ${toInsert.length} preguntas faltantes sembradas`);
+    }
+
+    return toInsert.length;
   }
 
   // ── Obtener preguntas de una etapa (sin revelar correctKey) ───────────────
